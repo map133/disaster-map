@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>災害可視化マップ (GPS必須版)</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+
+    <style>
+        /* レイアウト */
+        body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
+        #map { flex-grow: 1; z-index: 1; position: relative; background-color: #eee; }
+
+        /* 検索ボックス */
+        #search-box {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; width: 90%; max-width: 400px;
+            display: flex; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        #search-input { flex: 1; padding: 10px; border: none; border-radius: 4px 0 0 4px; font-size: 16px; }
+        #search-btn { padding: 10px 20px; background: #0078ff; color: white; border: none; border-radius: 0 4px 4px 0; font-weight: bold; cursor: pointer; }
+
+        /* 現在地に戻るボタン */
+        #gps-btn {
+            position: absolute; bottom: 20px; right: 20px; z-index: 1000;
+            background: white; border: 2px solid #ccc; border-radius: 50%;
+            width: 50px; height: 50px; cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            display: flex; justify-content: center; align-items: center;
+            font-size: 24px;
+        }
+        #gps-btn:active { background: #f0f0f0; }
+
+        /* 投稿エリア */
+        #controls {
+            padding: 15px; background: #fff; border-top: 1px solid #ddd;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1); z-index: 2;
+        }
+        h3 { margin: 0 0 10px 0; font-size: 16px; color: #333; text-align: center; }
+
+        .input-group { margin-bottom: 10px; }
+        select, input[type="text"] {
+            width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box;
+        }
+
+        /* ファイル選択ボタン */
+        .file-upload-btn {
+            display: block; width: 100%; padding: 12px;
+            background-color: #f0f0f0; border: 2px dashed #999; border-radius: 8px;
+            text-align: center; cursor: pointer; color: #555; font-weight: bold;
+            box-sizing: border-box;
+        }
+        .file-upload-btn:hover { background-color: #e0e0e0; }
+        #fileInput { display: none; }
+
+        /* 投稿ボタン */
+        #submit-btn {
+            width: 100%; padding: 12px; background-color: #ff3b30; color: white;
+            border: none; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer;
+        }
+        #submit-btn:active { opacity: 0.8; }
+        
+        .popup-media { width: 200px; margin-top: 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<div id="search-box">
+    <input type="text" id="search-input" placeholder="住所や地名で検索 (例: 東京駅)">
+    <button id="search-btn" onclick="searchLocation()">検索</button>
+</div>
+
+<div id="map">
+    <button id="gps-btn" onclick="moveToCurrentLocation()">🧭</button>
+</div>
+
+<div id="controls">
+    <h3>📸 災害状況を投稿・共有</h3>
+    
+    <div class="input-group">
+        <label for="fileInput" class="file-upload-btn">
+            📷 写真を選択または撮影
+        </label>
+        <input type="file" id="fileInput" accept="image/jpeg" onchange="updateFileName()">
+        <div id="fileNameDisplay" style="text-align: center; font-size: 14px; color: #0078ff; margin-top: 5px; font-weight: bold;"></div>
+    </div>
+    
+    <div class="input-group">
+        <select id="categoryInput">
+            <option value="" disabled selected>カテゴリを選択してください</option>
+            <option value="flooding">🌊 浸水・冠水</option>
+            <option value="fire">🔥 火災</option>
+            <option value="collapse">🏚️ 建物倒壊</option>
+            <option value="landslide">⛰️ 土砂崩れ</option>
+            <option value="road_damage">🚧 道路寸断・陥没</option>
+            <option value="infrastructure_damage">⚡ 電柱・インフラ被害</option>
+            <option value="supply_water">💧 給水所情報</option>
+            <option value="supply_food">🍙 支援物資・炊き出し</option>
+            <option value="rescue">🆘 救助要請</option>
+        </select>
+    </div>
+
+    <div class="input-group">
+        <input type="text" id="textInput" placeholder="状況の説明 (任意)">
+    </div>
+
+    <button id="submit-btn" onclick="processImage()">地図に追加 & 保存</button>
+    <div style="text-align: center; margin-top: 10px;">
+        <button onclick="clearLocalStorage()" style="font-size: 12px; color: #888; background: none; border: none; text-decoration: underline;">保存データをリセット</button>
+    </div>
+</div>
+
+<script>
+    // --- 1. 地図の初期化 ---
+    var map = L.map('map'); 
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    var localPins = [];
+    var currentLocationMarker = null;
+
+    // --- 2. 起動時の処理 ---
+    window.onload = function() {
+        loadFromLocalStorage();
+        moveToCurrentLocation();
+    };
+
+    // --- 現在地へ移動 ---
+    function moveToCurrentLocation() {
+        if (!navigator.geolocation) {
+            alert("位置情報が取得できません。デフォルトの場所を表示します。");
+            map.setView([35.681, 139.767], 5);
+            return;
+        }
+        
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                var lat = position.coords.latitude;
+                var lon = position.coords.longitude;
+                map.setView([lat, lon], 16);
+
+                if (currentLocationMarker) map.removeLayer(currentLocationMarker);
+                currentLocationMarker = L.circleMarker([lat, lon], {
+                    radius: 8, color: "white", weight: 2, fillColor: "#2196F3", fillOpacity: 1
+                }).addTo(map).bindPopup("現在地");
+            },
+            (error) => {
+                console.log("現在地取得エラー: " + error.message);
+                map.setView([35.681, 139.767], 5);
+            }
+        );
+    }
+
+    // --- 3. 住所検索 ---
+    function searchLocation() {
+        var query = document.getElementById('search-input').value;
+        if (!query) return;
+
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.length > 0) {
+                    map.setView([data[0].lat, data[0].lon], 16);
+                } else {
+                    alert("場所が見つかりませんでした");
+                }
+            })
+            .catch(e => alert("検索エラー"));
+    }
+
+    // --- 4. 画像処理 (★ここを改善) ---
+    function processImage() {
+        var fileInput = document.getElementById('fileInput');
+        var file = fileInput.files[0];
+        var category = document.getElementById('categoryInput').value;
+        var text = document.getElementById('textInput').value;
+
+        if (!file) { alert("画像を選択してください"); return; }
+        if (!category) { alert("カテゴリを選択してください"); return; }
+
+        // Exif読み取り開始
+        EXIF.getData(file, function() {
+            var latData = EXIF.getTag(this, "GPSLatitude");
+            var lonData = EXIF.getTag(this, "GPSLongitude");
+
+            // ★改善点: GPSデータがある場合のみ処理を進める
+            if (latData && lonData) {
+                var latRef = EXIF.getTag(this, "GPSLatitudeRef");
+                var lonRef = EXIF.getTag(this, "GPSLongitudeRef");
+                
+                var lat = convertDMSToDD(latData[0], latData[1], latData[2], latRef);
+                var lon = convertDMSToDD(lonData[0], lonData[1], lonData[2], lonRef);
+                var imageUrl = URL.createObjectURL(file);
+
+                var newPin = {
+                    lat: lat, lon: lon, category: category, text: text, media_url: imageUrl 
+                };
+
+                addPinToMap(newPin);
+                saveToLocalStorage(newPin);
+                map.setView([lat, lon], 16);
+                
+                // フォームリセット
+                fileInput.value = "";
+                document.getElementById('textInput').value = "";
+                document.getElementById('fileNameDisplay').innerText = "";
+                alert("投稿しました！");
+
+            } else {
+                // ★GPSがない場合: エラーを出して中断し、入力もクリアする
+                alert("⚠️ 投稿できません\n\nこの写真には位置情報(GPS)が含まれていません。\n位置情報をONにして撮影した写真を選択してください。");
+                
+                // 間違ったファイルをクリアして再選択を促す
+                fileInput.value = "";
+                document.getElementById('fileNameDisplay').textContent = "";
+            }
+        });
+    }
+
+    function convertDMSToDD(degrees, minutes, seconds, direction) {
+        var dd = degrees + minutes / 60 + seconds / (60 * 60);
+        if (direction == "S" || direction == "W") dd = dd * -1;
+        return dd;
+    }
+
+    // --- 5. ピン描画 ---
+    function addPinToMap(data) {
+        var color = "gray";
+        if (data.category === "flooding") color = "blue";
+        else if (data.category === "fire") color = "red";
+        else if (data.category === "collapse") color = "brown";
+        else if (data.category === "landslide") color = "saddlebrown";
+        else if (data.category === "road_damage") color = "black";
+        else if (data.category === "infrastructure_damage") color = "purple";
+        else if (data.category === "supply_water") color = "cyan";
+        else if (data.category === "supply_food") color = "green";
+        else if (data.category === "rescue") color = "orange";
+
+        var pinOptions = { radius: 10, fillColor: color, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9 };
+
+        var popupContent = `<b>${getCategoryLabel(data.category)}</b><br>${data.text}<br>`;
+        if (data.media_url) {
+            if(data.media_url.startsWith('http') || data.media_url.startsWith('blob')) {
+                 popupContent += `<img src="${data.media_url}" width="200" style="margin-top:5px; border-radius:4px;">`;
+            }
+        }
+
+        L.circleMarker([data.lat, data.lon], pinOptions)
+            .addTo(map)
+            .bindPopup(popupContent);
+    }
+
+    function getCategoryLabel(key) {
+        const labels = {
+            "flooding": "🌊 浸水", "fire": "🔥 火災", "collapse": "🏚️ 倒壊",
+            "landslide": "⛰️ 土砂崩れ", "road_damage": "🚧 道路寸断", 
+            "infrastructure_damage": "⚡ インフラ被害", "supply_water": "💧 給水所",
+            "supply_food": "🍙 支援物資", "rescue": "🆘 救助要請"
+        };
+        return labels[key] || key;
+    }
+
+    // --- 6. 保存 ---
+    function saveToLocalStorage(pinData) {
+        var saveItem = {
+            lat: pinData.lat,
+            lon: pinData.lon,
+            category: pinData.category,
+            text: pinData.text,
+            media_url: ""
+        };
+        localPins.push(saveItem);
+        localStorage.setItem('disasterMapData', JSON.stringify(localPins));
+    }
+
+    function loadFromLocalStorage() {
+        var dataStr = localStorage.getItem('disasterMapData');
+        if (dataStr) {
+            localPins = JSON.parse(dataStr);
+            localPins.forEach(pin => addPinToMap(pin));
+        }
+    }
+
+    function clearLocalStorage() {
+        if(confirm("保存されている投稿データを全て削除しますか？")) {
+            localStorage.removeItem('disasterMapData');
+            localPins = [];
+            alert("リセットしました。ページをリロードしてください。");
+            location.reload();
+        }
+    }
+
+    // --- ファイル名表示 ---
+    function updateFileName() {
+        var input = document.getElementById('fileInput');
+        var display = document.getElementById('fileNameDisplay');
+        
+        if(input.files.length > 0) {
+            display.innerHTML = "✅ <b>写真を選択しました</b>";
+        } else {
+            display.textContent = "";
+        }
+    }
+</script>
+
+</body>
+</html>
