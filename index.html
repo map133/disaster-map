@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>災害可視化マップ (GPS必須版)</title>
+    <title>災害可視化マップ (GPS必須版) - 機能追加版</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     
@@ -39,8 +39,10 @@
         #controls {
             padding: 15px; background: #fff; border-top: 1px solid #ddd;
             box-shadow: 0 -2px 10px rgba(0,0,0,0.1); z-index: 2;
+            max-height: 60vh; overflow-y: auto;
         }
         h3 { margin: 0 0 10px 0; font-size: 16px; color: #333; text-align: center; }
+        h4 { margin: 15px 0 10px 0; font-size: 14px; color: #555; }
 
         .input-group { margin-bottom: 10px; }
         select, input[type="text"] {
@@ -57,6 +59,11 @@
         .file-upload-btn:hover { background-color: #e0e0e0; }
         #fileInput { display: none; }
 
+        /* ファイル取消ボタン */
+        #cancelFileBtn {
+            display: none; cursor: pointer; margin-left: 10px; color: red; font-weight: bold;
+        }
+
         /* 投稿ボタン */
         #submit-btn {
             width: 100%; padding: 12px; background-color: #ff3b30; color: white;
@@ -65,6 +72,20 @@
         #submit-btn:active { opacity: 0.8; }
         
         .popup-media { width: 200px; margin-top: 5px; border-radius: 4px; }
+
+        /* 投稿一覧リスト */
+        #my-posts-list { list-style: none; padding: 0; margin: 0; }
+        #my-posts-list li {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 8px; border-bottom: 1px solid #eee; font-size: 14px;
+        }
+        .post-info { flex-grow: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-right: 10px;}
+        .delete-post-btn {
+            padding: 4px 8px; background-color: #ccc; color: #333; border: none;
+            border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0;
+        }
+        .delete-post-btn:hover { background-color: #bbb; color: #000;}
+
     </style>
 </head>
 <body>
@@ -86,7 +107,10 @@
             📷 写真を選択または撮影
         </label>
         <input type="file" id="fileInput" accept="image/jpeg" onchange="updateFileName()">
-        <div id="fileNameDisplay" style="text-align: center; font-size: 14px; color: #0078ff; margin-top: 5px; font-weight: bold;"></div>
+        <div id="fileNameDisplay" style="text-align: center; font-size: 14px; color: #0078ff; margin-top: 5px; font-weight: bold; display: flex; justify-content: center; align-items: center;">
+            <span id="fileNameText"></span>
+            <span id="cancelFileBtn" onclick="cancelFileUpload()">× 取消</span>
+        </div>
     </div>
     
     <div class="input-group">
@@ -101,6 +125,7 @@
             <option value="supply_water">💧 給水所情報</option>
             <option value="supply_food">🍙 支援物資・炊き出し</option>
             <option value="rescue">🆘 救助要請</option>
+            <option value="other">⚪ その他</option>
         </select>
     </div>
 
@@ -109,8 +134,14 @@
     </div>
 
     <button id="submit-btn" onclick="processImage()">地図に追加 & 保存</button>
-    <div style="text-align: center; margin-top: 10px;">
-        <button onclick="clearLocalStorage()" style="font-size: 12px; color: #888; background: none; border: none; text-decoration: underline;">保存データをリセット</button>
+
+    <div id="my-posts-container" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 10px;">
+        <h4>🗂️ 自分の投稿一覧</h4>
+        <ul id="my-posts-list">
+            </ul>
+        <div style="text-align: center; margin-top: 10px;">
+            <button onclick="clearLocalStorage()" style="font-size: 12px; color: #888; background: none; border: none; text-decoration: underline;">全件削除</button>
+        </div>
     </div>
 </div>
 
@@ -122,6 +153,7 @@
     }).addTo(map);
 
     var localPins = [];
+    var markersById = {}; 
     var currentLocationMarker = null;
 
     // --- 2. 起動時の処理 ---
@@ -173,7 +205,7 @@
             .catch(e => alert("検索エラー"));
     }
 
-    // --- 4. 画像処理 (★ここを改善) ---
+    // --- 4. 画像処理 ---
     function processImage() {
         var fileInput = document.getElementById('fileInput');
         var file = fileInput.files[0];
@@ -188,7 +220,6 @@
             var latData = EXIF.getTag(this, "GPSLatitude");
             var lonData = EXIF.getTag(this, "GPSLongitude");
 
-            // ★改善点: GPSデータがある場合のみ処理を進める
             if (latData && lonData) {
                 var latRef = EXIF.getTag(this, "GPSLatitudeRef");
                 var lonRef = EXIF.getTag(this, "GPSLongitudeRef");
@@ -198,6 +229,7 @@
                 var imageUrl = URL.createObjectURL(file);
 
                 var newPin = {
+                    id: Date.now(),
                     lat: lat, lon: lon, category: category, text: text, media_url: imageUrl 
                 };
 
@@ -206,18 +238,14 @@
                 map.setView([lat, lon], 16);
                 
                 // フォームリセット
-                fileInput.value = "";
+                cancelFileUpload(); 
                 document.getElementById('textInput').value = "";
-                document.getElementById('fileNameDisplay').innerText = "";
+                document.getElementById('categoryInput').selectedIndex = 0; 
                 alert("投稿しました！");
 
             } else {
-                // ★GPSがない場合: エラーを出して中断し、入力もクリアする
                 alert("⚠️ 投稿できません\n\nこの写真には位置情報(GPS)が含まれていません。\n位置情報をONにして撮影した写真を選択してください。");
-                
-                // 間違ったファイルをクリアして再選択を促す
-                fileInput.value = "";
-                document.getElementById('fileNameDisplay').textContent = "";
+                cancelFileUpload(); 
             }
         });
     }
@@ -230,7 +258,7 @@
 
     // --- 5. ピン描画 ---
     function addPinToMap(data) {
-        var color = "gray";
+        var color = "gray"; 
         if (data.category === "flooding") color = "blue";
         else if (data.category === "fire") color = "red";
         else if (data.category === "collapse") color = "brown";
@@ -240,6 +268,7 @@
         else if (data.category === "supply_water") color = "cyan";
         else if (data.category === "supply_food") color = "green";
         else if (data.category === "rescue") color = "orange";
+        // else if (data.category === "other") color = "gray";
 
         var pinOptions = { radius: 10, fillColor: color, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9 };
 
@@ -250,9 +279,13 @@
             }
         }
 
-        L.circleMarker([data.lat, data.lon], pinOptions)
+        var marker = L.circleMarker([data.lat, data.lon], pinOptions)
             .addTo(map)
             .bindPopup(popupContent);
+
+        if (data.id) {
+            markersById[data.id] = marker;
+        }
     }
 
     function getCategoryLabel(key) {
@@ -260,50 +293,106 @@
             "flooding": "🌊 浸水", "fire": "🔥 火災", "collapse": "🏚️ 倒壊",
             "landslide": "⛰️ 土砂崩れ", "road_damage": "🚧 道路寸断", 
             "infrastructure_damage": "⚡ インフラ被害", "supply_water": "💧 給水所",
-            "supply_food": "🍙 支援物資", "rescue": "🆘 救助要請"
+            "supply_food": "🍙 支援物資", "rescue": "🆘 救助要請",
+            "other": "⚪ その他"
         };
         return labels[key] || key;
     }
 
-    // --- 6. 保存 ---
+    // --- 6. 保存と管理 ---
     function saveToLocalStorage(pinData) {
         var saveItem = {
+            id: pinData.id,
             lat: pinData.lat,
             lon: pinData.lon,
             category: pinData.category,
             text: pinData.text,
-            media_url: ""
+            media_url: "" 
         };
         localPins.push(saveItem);
         localStorage.setItem('disasterMapData', JSON.stringify(localPins));
+        renderPostList();
     }
 
     function loadFromLocalStorage() {
         var dataStr = localStorage.getItem('disasterMapData');
         if (dataStr) {
             localPins = JSON.parse(dataStr);
-            localPins.forEach(pin => addPinToMap(pin));
+            localPins.forEach(pin => {
+                if(!pin.id) pin.id = Date.now() + Math.random();
+                addPinToMap(pin)
+            });
+            renderPostList();
         }
     }
 
+    function renderPostList() {
+        var listEl = document.getElementById('my-posts-list');
+        listEl.innerHTML = ""; 
+
+        if (localPins.length === 0) {
+            listEl.innerHTML = "<li style='color:#888;'>まだ投稿はありません</li>";
+            return;
+        }
+
+        localPins.slice().reverse().forEach(pin => {
+            var li = document.createElement('li');
+            var catLabel = getCategoryLabel(pin.category);
+            var textPreview = pin.text ? pin.text : "(説明なし)";
+            
+            li.innerHTML = `
+                <div class="post-info">
+                    <b>${catLabel}</b>: ${textPreview}
+                </div>
+                <button class="delete-post-btn" onclick="deletePost(${pin.id})">削除</button>
+            `;
+            listEl.appendChild(li);
+        });
+    }
+
+    function deletePost(id) {
+        if(!confirm("この投稿を削除しますか？\n地図からも削除されます。")) return;
+
+        localPins = localPins.filter(pin => pin.id !== id);
+        
+        localStorage.setItem('disasterMapData', JSON.stringify(localPins));
+        
+        if (markersById[id]) {
+            map.removeLayer(markersById[id]);
+            delete markersById[id];
+        }
+
+        renderPostList();
+    }
+
     function clearLocalStorage() {
-        if(confirm("保存されている投稿データを全て削除しますか？")) {
+        if(confirm("保存されている投稿データを【全て】削除しますか？\nこの操作は取り消せません。")) {
             localStorage.removeItem('disasterMapData');
             localPins = [];
+            markersById = {};
             alert("リセットしました。ページをリロードしてください。");
             location.reload();
         }
     }
 
-    // --- ファイル名表示 ---
+    // --- ファイル名表示と取消 ---
+    function cancelFileUpload() {
+        document.getElementById('fileInput').value = "";
+        updateFileName();
+    }
+
     function updateFileName() {
         var input = document.getElementById('fileInput');
-        var display = document.getElementById('fileNameDisplay');
+        var textDisplay = document.getElementById('fileNameText');
+        var cancelBtn = document.getElementById('cancelFileBtn');
         
         if(input.files.length > 0) {
-            display.innerHTML = "✅ <b>写真を選択しました</b>";
+            // ファイル名は表示せず、選択中であることだけを示す
+            textDisplay.innerHTML = "✅ <b>写真選択中</b>";
+            cancelBtn.style.display = "inline"; 
         } else {
-            display.textContent = "";
+            textDisplay.textContent = "";
+            cancelBtn.style.display = "none";
         }
     }
 </script>
